@@ -1,0 +1,25 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "dupegun"
+version = "1.0.0"
+description = "Cross-platform duplicate file finder and cleaner"
+readme = "README.md"
+license = {file = "LICENSE"}
+requires-python = ">=3.9"
+keywords = ["duplicate", "files", "cli", "disk", "cleaner"]
+classifiers = [
+    "Programming Language :: Python :: 3",
+    "License :: OSI Approved :: MIT License",
+    "Operating System :: OS Independent",
+    "Environment :: Console",
+]
+dependencies = [
+    "rich>=13.0",
+    "click>=8.0",
+]
+
+[project.scripts]
+dupegun = "dupegun.cli:main"
