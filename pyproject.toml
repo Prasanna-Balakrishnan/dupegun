@@ -4,12 +4,15 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "dupegun"
-version = "1.0.0"
+version = "1.0.1"
 description = "Cross-platform duplicate file finder and cleaner"
 readme = "README.md"
 license = {file = "LICENSE"}
 requires-python = ">=3.9"
-keywords = ["duplicate", "files", "cli", "disk", "cleaner"]
+keywords = ["duplicate", "files", "cli", "disk", "cleaner", "cross-platform"]
+authors = [
+    {name = "Prasanna B", email = "prasannab806@gmail.com"}
+]
 classifiers = [
     "Programming Language :: Python :: 3",
     "License :: OSI Approved :: MIT License",
@@ -20,6 +23,11 @@ dependencies = [
     "rich>=13.0",
     "click>=8.0",
 ]
+
+[project.urls]
+Homepage = "https://github.com/Prasanna-Balakrishnan/dupegun"
+Repository = "https://github.com/Prasanna-Balakrishnan/dupegun"
+"Bug Tracker" = "https://github.com/Prasanna-Balakrishnan/dupegun/issues"
 
 [project.scripts]
 dupegun = "dupegun.cli:main"
