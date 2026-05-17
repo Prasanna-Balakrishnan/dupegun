@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "dupegun"
-version = "1.0.1"
+version = "1.1.0"
 description = "Cross-platform duplicate file finder and cleaner"
 readme = "README.md"
 license = {file = "LICENSE"}

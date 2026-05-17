@@ -14,6 +14,17 @@ def human_size(n: int) -> str:
         n /= 1024
     return f"{n:.1f} PB"
 
+def _wasted(groups: dict) -> int:
+    """Total bytes wasted across all duplicate groups."""
+    total = 0
+    for paths in groups.values():
+        try:
+            size = paths[0].stat().st_size
+        except (OSError, PermissionError):
+            size = 0
+        total += size * (len(paths) - 1)
+    return total
+
 def print_table(groups: dict) -> None:
     total_wasted = 0
 
@@ -45,6 +56,23 @@ def print_table(groups: dict) -> None:
         f"\n[bold green]Total reclaimable:[/bold green] "
         f"[green]{human_size(total_wasted)}[/green] "
         f"across [bold]{len(groups)}[/bold] duplicate group(s)\n"
+    )
+
+def print_summary(groups: dict) -> None:
+    """Print a single-line summary — total wasted space, no file list."""
+    total_wasted = _wasted(groups)
+    console.print(
+        f"\n[bold green]Total reclaimable:[/bold green] "
+        f"[green]{human_size(total_wasted)}[/green] "
+        f"across [bold]{len(groups)}[/bold] duplicate group(s)\n"
+    )
+
+def print_count(groups: dict) -> None:
+    """Print duplicate group count and wasted space, then exit."""
+    total_wasted = _wasted(groups)
+    console.print(
+        f"\n[bold]{len(groups)}[/bold] duplicate group(s) found, "
+        f"[red]{human_size(total_wasted)}[/red] wasted\n"
     )
 
 def export_json(groups: dict, out_path: str) -> None:

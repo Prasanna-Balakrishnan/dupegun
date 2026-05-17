@@ -60,14 +60,29 @@ dupegun scan ~/Downloads ~/Documents ~/Desktop
 # Skip files smaller than 1 MB
 dupegun scan ~/Downloads --min-size 1000000
 
+# Only scan image files
+dupegun scan ~/Downloads --type .jpg --type .png --type .gif
+
+# Only scan video files
+dupegun scan ~/Downloads --type .mp4 --type .mkv --type .avi
+
+# Skip specific folders
+dupegun scan C:\ --exclude Windows --exclude "Program Files"
+
+# Just show total wasted space — no file list
+dupegun scan ~/Downloads --summary
+
+# Show only the duplicate count and wasted space
+dupegun scan ~/Downloads --count
+
 # Export results to JSON
 dupegun scan ~/Downloads --json results.json
 
 # Export results to CSV
 dupegun scan ~/Downloads --csv results.csv
 
-# Export both at once
-dupegun scan ~/Downloads --json results.json --csv results.csv
+# Combine filters — only duplicate JPEGs, skip cache folders
+dupegun scan ~/Photos --type .jpg --exclude .thumbnails --summary
 ```
 
 ---
@@ -87,6 +102,9 @@ dupegun delete ~/Downloads --strategy newest --no-dry-run
 
 # Confirm each group one by one before deleting
 dupegun delete ~/Downloads --no-dry-run --interactive
+
+# Delete only duplicate images, skip cache
+dupegun delete ~/Photos --type .jpg --type .png --exclude .thumbnails --no-dry-run
 ```
 
 ---
@@ -129,17 +147,21 @@ Replaces duplicate files with hard links. Both file paths remain on your system,
 
 ## Options
 
-| Option | Description | Default |
-|---|---|---|
-| `--strategy shortest` | Keep the file with the shortest path | Default |
-| `--strategy newest` | Keep the most recently modified copy | — |
-| `--strategy oldest` | Keep the oldest copy | — |
-| `--dry-run` | Preview without making any changes | ON |
-| `--no-dry-run` | Actually perform the action | — |
-| `--interactive` | Confirm each duplicate group before acting | OFF |
-| `--min-size <bytes>` | Skip files smaller than this size | 1 byte |
-| `--json <file>` | Export scan results to JSON | — |
-| `--csv <file>` | Export scan results to CSV | — |
+| Option | Commands | Description | Default |
+|---|---|---|---|
+| `--strategy shortest` | delete, move, hardlink | Keep the file with the shortest path | Default |
+| `--strategy newest` | delete, move, hardlink | Keep the most recently modified copy | — |
+| `--strategy oldest` | delete, move, hardlink | Keep the oldest copy | — |
+| `--dry-run` | delete, move, hardlink | Preview without making any changes | ON |
+| `--no-dry-run` | delete, move, hardlink | Actually perform the action | — |
+| `--interactive` | delete | Confirm each duplicate group before acting | OFF |
+| `--min-size <bytes>` | all | Skip files smaller than this size | 1 byte |
+| `--type <ext>` | all | Only include files with this extension (repeatable) | all types |
+| `--exclude <name>` | all | Skip any folder with this name (repeatable) | none |
+| `--summary` | scan | Print total wasted space only, no file list | OFF |
+| `--count` | scan | Print group count and wasted space, then exit | OFF |
+| `--json <file>` | scan | Export scan results to JSON | — |
+| `--csv <file>` | scan | Export scan results to CSV | — |
 
 ---
 
@@ -202,11 +224,24 @@ Two files with different names but identical contents will always be detected.
 ## Examples
 
 ```bash
+# Find duplicate images in Downloads
+dupegun scan ~/Downloads --type .jpg --type .png --type .gif
+
+# Find duplicate videos, skip system folders
+dupegun scan C:\ --type .mp4 --type .mkv --exclude Windows --exclude "Program Files"
+
+# Quick summary — how much space am I wasting?
+dupegun scan ~/Downloads --summary
+
+# Just the count
+dupegun scan ~/Downloads --count
+# 47 duplicate group(s) found, 2.3 GB wasted
+
 # Find duplicates in Downloads, skip files under 500 KB
 dupegun scan C:\Users\You\Downloads --min-size 500000
 
-# Delete duplicates keeping the newest copy
-dupegun delete C:\Users\You\Downloads --strategy newest --no-dry-run
+# Delete duplicate images keeping the newest copy
+dupegun delete ~/Photos --type .jpg --type .png --strategy newest --no-dry-run
 
 # Move duplicates from two folders into one quarantine folder
 dupegun move C:\Photos C:\Backup --dest C:\quarantine --no-dry-run
@@ -214,6 +249,25 @@ dupegun move C:\Photos C:\Backup --dest C:\quarantine --no-dry-run
 # Export full report to CSV and open in Excel
 dupegun scan C:\Users\You\Documents --csv report.csv
 ```
+
+---
+
+## Changelog
+
+### v1.1.0
+- `--type` filter: scan only specific file extensions (e.g. `--type .jpg --type .png`)
+- `--exclude` filter: skip folders by name (e.g. `--exclude node_modules`)
+- `--summary` flag: show total wasted space without printing every file
+- `--count` flag: print duplicate group count and wasted space in one line
+- `--type` and `--exclude` are available on all commands (`scan`, `delete`, `move`, `hardlink`)
+
+### v1.0.1
+- Minor packaging fixes
+
+### v1.0.0
+- Initial release: `scan`, `delete`, `move`, `hardlink` commands
+- 3-pass hashing engine
+- `--strategy`, `--dry-run`, `--interactive`, `--min-size`, `--json`, `--csv`
 
 ---
 
