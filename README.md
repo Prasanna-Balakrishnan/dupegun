@@ -334,5 +334,5 @@ MIT — see [LICENSE](LICENSE) for details.
 ## Author
 
 Made by **Prasanna B**
-
+LinkedIn: https://github.com/Prasanna-Balakrishnan/dupegun
 If this tool helped you, consider giving it a star on GitHub!
