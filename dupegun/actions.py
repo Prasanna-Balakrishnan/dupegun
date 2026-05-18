@@ -1,4 +1,5 @@
 import os
+import time
 import shutil
 from pathlib import Path
 from rich.console import Console
@@ -7,37 +8,70 @@ from .reporter import human_size
 
 console = Console()
 
+
 def pick_keeper(paths: list, strategy: str) -> Path:
     if strategy == "newest":
         return max(paths, key=lambda p: p.stat().st_mtime)
     if strategy == "oldest":
         return min(paths, key=lambda p: p.stat().st_mtime)
-    if strategy == "shortest":
-        return min(paths, key=lambda p: len(str(p)))
-    return paths[0]
+    # default: shortest path
+    return min(paths, key=lambda p: len(str(p)))
+
 
 def delete_dupes(
     groups: dict,
     strategy: str = "shortest",
     dry_run: bool = True,
     interactive: bool = False,
+    older_than: int = None,
 ) -> None:
+    """
+    Delete duplicate files, keeping one copy per group.
+
+    Args:
+        groups:      Hash → [Path, ...] from find_duplicates.
+        strategy:    Which copy to keep ('shortest', 'newest', 'oldest').
+        dry_run:     If True, only preview — nothing is deleted.
+        interactive: Prompt before each group.
+        older_than:  If set, only delete copies that are older than this many
+                     days. Files newer than the threshold are always kept,
+                     even if they are duplicates.
+    """
     total_freed = 0
+    cutoff_ts   = (time.time() - older_than * 86_400) if older_than else None
 
     for hash_val, paths in groups.items():
-        keeper = pick_keeper(paths, strategy)
+        keeper    = pick_keeper(paths, strategy)
         to_delete = [p for p in paths if p != keeper]
+
+        # --older-than: further restrict to files modified before the cutoff
+        if cutoff_ts is not None:
+            to_delete = [
+                p for p in to_delete
+                if p.stat().st_mtime < cutoff_ts
+            ]
+
+        if not to_delete:
+            continue
 
         console.print(f"\n[bold]Keep:[/bold]   [green]{keeper}[/green]")
         for p in to_delete:
-            console.print(f"[bold]Delete:[/bold] [red]{p}[/red]")
+            try:
+                age_days = (time.time() - p.stat().st_mtime) / 86_400
+                age_str  = f"  [dim]({age_days:.0f} days old)[/dim]"
+            except (OSError, PermissionError):
+                age_str = ""
+            console.print(f"[bold]Delete:[/bold] [red]{p}[/red]{age_str}")
 
         if interactive:
             if not Confirm.ask("  Proceed with this group?"):
                 continue
 
         for p in to_delete:
-            size = p.stat().st_size
+            try:
+                size = p.stat().st_size
+            except (OSError, PermissionError):
+                size = 0
             if dry_run:
                 console.print(f"  [dim][DRY RUN] would delete {p}[/dim]")
             else:
@@ -52,6 +86,7 @@ def delete_dupes(
         console.print(
             f"\n[bold green]Freed {human_size(total_freed)}[/bold green]"
         )
+
 
 def move_dupes(
     groups: dict,
@@ -77,6 +112,7 @@ def move_dupes(
             else:
                 shutil.move(str(p), str(target))
                 console.print(f"[yellow]Moved {p} → {target}[/yellow]")
+
 
 def hardlink_dupes(
     groups: dict,

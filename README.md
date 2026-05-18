@@ -60,6 +60,12 @@ dupegun scan ~/Downloads ~/Documents ~/Desktop
 # Skip files smaller than 1 MB
 dupegun scan ~/Downloads --min-size 1000000
 
+# Scan specific size ranges (e.g., between 1MB and 100MB)
+dupegun scan ~/Downloads --min-size 1MB --max-size 100MB
+
+# Regex filename filter (e.g., files starting with "Copy of")
+dupegun scan ~/Downloads --pattern "Copy of.*"
+
 # Only scan image files
 dupegun scan ~/Downloads --type .jpg --type .png --type .gif
 
@@ -87,6 +93,21 @@ dupegun scan ~/Photos --type .jpg --exclude .thumbnails --summary
 
 ---
 
+### `compare` — cross-directory duplicates
+
+Find files that exist in *both* folders. Great for checking backups against your active drive.
+
+```bash
+dupegun compare <path_a> <path_b> [options]
+```
+
+```bash
+# Find files duplicated between your Downloads and your Backup drive
+dupegun compare ~/Downloads ~/Backup
+```
+
+---
+
 ### `delete` — remove duplicates
 
 ```bash
@@ -102,6 +123,9 @@ dupegun delete ~/Downloads --strategy newest --no-dry-run
 
 # Confirm each group one by one before deleting
 dupegun delete ~/Downloads --no-dry-run --interactive
+
+# Auto-delete by age (only delete copies older than 30 days)
+dupegun delete ~/Downloads --older-than 30 --no-dry-run
 
 # Delete only duplicate images, skip cache
 dupegun delete ~/Photos --type .jpg --type .png --exclude .thumbnails --no-dry-run
@@ -155,7 +179,10 @@ Replaces duplicate files with hard links. Both file paths remain on your system,
 | `--dry-run` | delete, move, hardlink | Preview without making any changes | ON |
 | `--no-dry-run` | delete, move, hardlink | Actually perform the action | — |
 | `--interactive` | delete | Confirm each duplicate group before acting | OFF |
-| `--min-size <bytes>` | all | Skip files smaller than this size | 1 byte |
+| `--older-than <days>`| delete | Only delete copies modified more than this many days ago | — |
+| `--min-size <size>` | all | Skip files smaller than this size (e.g. 1MB) | 1 byte |
+| `--max-size <size>` | all | Skip files larger than this size (e.g. 100MB) | no limit |
+| `--pattern <regex>` | all | Only scan filenames matching this regex | none |
 | `--type <ext>` | all | Only include files with this extension (repeatable) | all types |
 | `--exclude <name>` | all | Skip any folder with this name (repeatable) | none |
 | `--summary` | scan | Print total wasted space only, no file list | OFF |
@@ -248,11 +275,24 @@ dupegun move C:\Photos C:\Backup --dest C:\quarantine --no-dry-run
 
 # Export full report to CSV and open in Excel
 dupegun scan C:\Users\You\Documents --csv report.csv
+
+# Compare active projects to a backup drive to find cross-duplicates
+dupegun compare ~/Projects /Volumes/BackupDrive/Projects
+
+# Find duplicates matching a specific filename pattern and size range
+dupegun scan ~/Downloads --pattern "Copy of.*" --min-size 1MB --max-size 50MB
 ```
 
 ---
 
 ## Changelog
+
+### v1.2.0
+- **`compare` command**: Compare two directories to find cross-duplicates.
+- **`--older-than` flag**: Auto-delete files based on age (safeguards recent files).
+- **`--max-size` flag**: Combine with `--min-size` to scan specific size ranges.
+- **`--pattern` flag**: Filter scans by regex filename patterns.
+- Size parsing now supports human-readable formats (e.g., `1MB`, `2GB`).
 
 ### v1.1.0
 - `--type` filter: scan only specific file extensions (e.g. `--type .jpg --type .png`)
@@ -276,7 +316,7 @@ dupegun scan C:\Users\You\Documents --csv report.csv
 Pull requests are welcome! To get started:
 
 ```bash
-git clone https://github.com/YOUR_USERNAME/dupegun.git
+git clone [https://github.com/YOUR_USERNAME/dupegun.git](https://github.com/YOUR_USERNAME/dupegun.git)
 cd dupegun
 pip install -e .
 pip install pytest

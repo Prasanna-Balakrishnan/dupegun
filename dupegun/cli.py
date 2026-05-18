@@ -3,17 +3,65 @@ from pathlib import Path
 from rich.console import Console
 from rich.progress import (
     Progress, SpinnerColumn,
-    TextColumn, BarColumn, TaskProgressColumn
+    TextColumn, BarColumn, TaskProgressColumn,
 )
 
-from .scanner import find_duplicates
-from .reporter import print_table, print_summary, print_count, export_json, export_csv
+from .scanner import find_duplicates, find_cross_duplicates
+from .reporter import (
+    print_table, print_summary, print_count,
+    print_comparison, export_json, export_csv,
+)
 from .actions import delete_dupes, move_dupes, hardlink_dupes
 
 console = Console()
 
-def _scan(paths, min_size, types=None, exclude=None):
-    roots = [Path(p) for p in paths]
+# ── helpers ───────────────────────────────────────────────────────────────────
+
+def _parse_size(value: str) -> int:
+    """
+    Convert a human-readable size string to bytes.
+
+    Accepted formats: 100, 500B, 1KB, 1.5MB, 2GB, 1TB  (case-insensitive)
+    """
+    if value is None:
+        return None
+    s = value.strip().upper()
+    units = [
+        ("TB", 1024 ** 4),
+        ("GB", 1024 ** 3),
+        ("MB", 1024 ** 2),
+        ("KB", 1024),
+        ("B",  1),
+    ]
+    for suffix, mult in units:
+        if s.endswith(suffix):
+            try:
+                return int(float(s[: -len(suffix)]) * mult)
+            except ValueError:
+                raise click.BadParameter(
+                    f"Cannot parse size '{value}'. "
+                    "Use formats like: 1, 500B, 1KB, 1.5MB, 2GB"
+                )
+    try:
+        return int(s)
+    except ValueError:
+        raise click.BadParameter(
+            f"Cannot parse size '{value}'. "
+            "Use formats like: 1, 500B, 1KB, 1.5MB, 2GB"
+        )
+
+
+def _normalise_types(types: tuple):
+    if not types:
+        return None
+    return {t if t.startswith(".") else f".{t}" for t in types}
+
+
+def _scan(paths, min_size_str, max_size_str=None, types=None, exclude=None, pattern=None):
+    roots    = [Path(p) for p in paths]
+    min_size = _parse_size(min_size_str) if isinstance(min_size_str, str) else min_size_str
+    max_size = _parse_size(max_size_str) if max_size_str else None
+
     with Progress(
         SpinnerColumn(),
         TextColumn("[progress.description]{task.description}"),
@@ -22,22 +70,56 @@ def _scan(paths, min_size, types=None, exclude=None):
         transient=True,
     ) as progress:
         task = progress.add_task("Scanning...", total=None)
+
         def cb(done, total, path):
             progress.update(
                 task, completed=done, total=total,
-                description=f"Hashing [cyan]{path.name}[/cyan]"
+                description=f"Hashing [cyan]{path.name}[/cyan]",
             )
+
         groups = find_duplicates(
             roots,
             min_size=min_size,
+            max_size=max_size,
             progress_cb=cb,
             types=types,
             exclude=exclude,
+            pattern=pattern,
         )
     return groups
 
+
+# ── shared option decorators ──────────────────────────────────────────────────
+
+def _common_scan_opts(fn):
+    """Options shared by scan, delete, move, hardlink."""
+    fn = click.option(
+        "--min-size", default="1",
+        help="Minimum file size (e.g. 1, 500B, 1KB, 1MB). Default: 1",
+    )(fn)
+    fn = click.option(
+        "--max-size", default=None,
+        help="Maximum file size (e.g. 100MB, 2GB). Default: no limit",
+    )(fn)
+    fn = click.option(
+        "--type", "types", multiple=True, metavar="EXT",
+        help="Only scan files with this extension (repeatable: --type .jpg --type .png)",
+    )(fn)
+    fn = click.option(
+        "--exclude", multiple=True, metavar="NAME",
+        help="Skip folders with this name (repeatable: --exclude node_modules --exclude .git)",
+    )(fn)
+    fn = click.option(
+        "--pattern", default=None, metavar="REGEX",
+        help='Only scan filenames matching this regex (e.g. --pattern "Copy of.*")',
+    )(fn)
+    return fn
+
+
+# ── CLI group ─────────────────────────────────────────────────────────────────
+
 @click.group()
-@click.version_option("1.1.0", prog_name="dupegun")
+@click.version_option("1.2.0", prog_name="dupegun")
 def main():
     """dupegun — find and destroy duplicate files.
 
@@ -45,37 +127,26 @@ def main():
     """
     pass
 
+
+# ── scan ──────────────────────────────────────────────────────────────────────
+
 @main.command()
 @click.argument("paths", nargs=-1, required=True,
                 type=click.Path(exists=True))
-@click.option("--min-size", default=1,
-              help="Minimum file size in bytes to scan (default: 1)")
-@click.option("--type", "types", multiple=True, metavar="EXT",
-              help="Only scan files with this extension. "
-                   "Can be repeated: --type .jpg --type .png")
-@click.option("--exclude", multiple=True, metavar="NAME",
-              help="Skip any folder whose name matches. "
-                   "Can be repeated: --exclude node_modules --exclude .git")
+@_common_scan_opts
 @click.option("--summary", is_flag=True,
               help="Print total wasted space only, no file list")
-@click.option("--count", is_flag=True,
+@click.option("--count",   is_flag=True,
               help="Print duplicate group count and wasted space, then exit")
 @click.option("--json", "out_json", default=None,
               help="Export results to a JSON file")
-@click.option("--csv", "out_csv", default=None,
+@click.option("--csv",  "out_csv",  default=None,
               help="Export results to a CSV file")
-def scan(paths, min_size, types, exclude, summary, count, out_json, out_csv):
+def scan(paths, min_size, max_size, types, exclude, pattern, summary, count, out_json, out_csv):
     """Scan folders and list all duplicate files."""
-    # Normalise extensions — accept both .jpg and jpg
-    normalised_types = None
-    if types:
-        normalised_types = {
-            t if t.startswith(".") else f".{t}"
-            for t in types
-        }
-
+    norm_types = _normalise_types(types)
     console.print(f"\n[bold]dupegun[/bold] — scanning {len(paths)} path(s)...\n")
-    groups = _scan(paths, min_size, types=normalised_types, exclude=set(exclude))
+    groups = _scan(paths, min_size, max_size, norm_types, set(exclude), pattern)
 
     if not groups:
         console.print("[bold green]No duplicates found![/bold green]")
@@ -95,6 +166,72 @@ def scan(paths, min_size, types, exclude, summary, count, out_json, out_csv):
     if out_csv:
         export_csv(groups, out_csv)
 
+
+# ── compare ───────────────────────────────────────────────────────────────────
+
+@main.command()
+@click.argument("path_a", type=click.Path(exists=True))
+@click.argument("path_b", type=click.Path(exists=True))
+@click.option(
+    "--min-size", default="1",
+    help="Minimum file size (e.g. 1, 500B, 1KB, 1MB). Default: 1",
+)
+@click.option(
+    "--max-size", default=None,
+    help="Maximum file size (e.g. 100MB, 2GB). Default: no limit",
+)
+@click.option("--type", "types", multiple=True, metavar="EXT",
+              help="Only compare files with this extension (repeatable)")
+@click.option("--exclude", multiple=True, metavar="NAME",
+              help="Skip folders with this name (repeatable)")
+@click.option("--pattern", default=None, metavar="REGEX",
+              help='Only compare filenames matching this regex')
+def compare(path_a, path_b, min_size, max_size, types, exclude, pattern):
+    """Compare two folders and show files duplicated across both.
+
+    \b
+    Example:
+        dupegun compare ~/Downloads ~/Backup
+    """
+    norm_types = _normalise_types(types)
+    min_b      = _parse_size(min_size) if isinstance(min_size, str) else min_size
+    max_b      = _parse_size(max_size) if max_size else None
+
+    console.print(
+        f"\n[bold]dupegun compare[/bold] — "
+        f"[cyan]{path_a}[/cyan]  ↔  [cyan]{path_b}[/cyan]\n"
+    )
+
+    with Progress(
+        SpinnerColumn(),
+        TextColumn("[progress.description]{task.description}"),
+        BarColumn(),
+        TaskProgressColumn(),
+        transient=True,
+    ) as progress:
+        task = progress.add_task("Comparing...", total=None)
+
+        def cb(done, total, path):
+            progress.update(
+                task, completed=done, total=total,
+                description=f"Hashing [cyan]{path.name}[/cyan]",
+            )
+
+        cross = find_cross_duplicates(
+            Path(path_a), Path(path_b),
+            min_size=min_b,
+            max_size=max_b,
+            types=norm_types,
+            exclude=set(exclude),
+            pattern=pattern,
+            progress_cb=cb,
+        )
+
+    print_comparison(cross, path_a, path_b)
+
+
+# ── delete ────────────────────────────────────────────────────────────────────
+
 @main.command()
 @click.argument("paths", nargs=-1, required=True,
                 type=click.Path(exists=True))
@@ -105,21 +242,14 @@ def scan(paths, min_size, types, exclude, summary, count, out_json, out_csv):
               help="Preview without deleting (default: ON)")
 @click.option("--interactive", is_flag=True,
               help="Confirm each group before deleting")
-@click.option("--min-size", default=1)
-@click.option("--type", "types", multiple=True, metavar="EXT",
-              help="Only scan files with this extension")
-@click.option("--exclude", multiple=True, metavar="NAME",
-              help="Skip folders with this name")
-def delete(paths, strategy, dry_run, interactive, min_size, types, exclude):
+@click.option("--older-than", default=None, type=int, metavar="DAYS",
+              help="Only delete copies older than this many days")
+@_common_scan_opts
+def delete(paths, strategy, dry_run, interactive, older_than,
+           min_size, max_size, types, exclude, pattern):
     """Delete duplicates, keeping one copy per group."""
-    normalised_types = None
-    if types:
-        normalised_types = {
-            t if t.startswith(".") else f".{t}"
-            for t in types
-        }
-
-    groups = _scan(paths, min_size, types=normalised_types, exclude=set(exclude))
+    norm_types = _normalise_types(types)
+    groups = _scan(paths, min_size, max_size, norm_types, set(exclude), pattern)
 
     if not groups:
         console.print("[bold green]No duplicates found![/bold green]")
@@ -131,12 +261,22 @@ def delete(paths, strategy, dry_run, interactive, min_size, types, exclude):
             "Use --no-dry-run to actually delete.[/yellow]\n"
         )
 
+    if older_than:
+        console.print(
+            f"[dim]--older-than {older_than}: only deleting copies "
+            f"last modified more than {older_than} day(s) ago.[/dim]\n"
+        )
+
     delete_dupes(
         groups,
         strategy=strategy,
         dry_run=dry_run,
-        interactive=interactive
+        interactive=interactive,
+        older_than=older_than,
     )
+
+
+# ── move ──────────────────────────────────────────────────────────────────────
 
 @main.command()
 @click.argument("paths", nargs=-1, required=True,
@@ -146,19 +286,12 @@ def delete(paths, strategy, dry_run, interactive, min_size, types, exclude):
 @click.option("--strategy", default="shortest",
               type=click.Choice(["shortest", "newest", "oldest"]))
 @click.option("--dry-run/--no-dry-run", default=True)
-@click.option("--min-size", default=1)
-@click.option("--type", "types", multiple=True, metavar="EXT")
-@click.option("--exclude", multiple=True, metavar="NAME")
-def move(paths, dest, strategy, dry_run, min_size, types, exclude):
+@_common_scan_opts
+def move(paths, dest, strategy, dry_run,
+         min_size, max_size, types, exclude, pattern):
     """Move duplicates to a quarantine folder instead of deleting."""
-    normalised_types = None
-    if types:
-        normalised_types = {
-            t if t.startswith(".") else f".{t}"
-            for t in types
-        }
-
-    groups = _scan(paths, min_size, types=normalised_types, exclude=set(exclude))
+    norm_types = _normalise_types(types)
+    groups = _scan(paths, min_size, max_size, norm_types, set(exclude), pattern)
 
     if not groups:
         console.print("[bold green]No duplicates found![/bold green]")
@@ -172,25 +305,21 @@ def move(paths, dest, strategy, dry_run, min_size, types, exclude):
 
     move_dupes(groups, Path(dest), strategy=strategy, dry_run=dry_run)
 
+
+# ── hardlink ──────────────────────────────────────────────────────────────────
+
 @main.command()
 @click.argument("paths", nargs=-1, required=True,
                 type=click.Path(exists=True))
 @click.option("--strategy", default="shortest",
               type=click.Choice(["shortest", "newest", "oldest"]))
 @click.option("--dry-run/--no-dry-run", default=True)
-@click.option("--min-size", default=1)
-@click.option("--type", "types", multiple=True, metavar="EXT")
-@click.option("--exclude", multiple=True, metavar="NAME")
-def hardlink(paths, strategy, dry_run, min_size, types, exclude):
+@_common_scan_opts
+def hardlink(paths, strategy, dry_run,
+             min_size, max_size, types, exclude, pattern):
     """Replace duplicates with hard links to save space."""
-    normalised_types = None
-    if types:
-        normalised_types = {
-            t if t.startswith(".") else f".{t}"
-            for t in types
-        }
-
-    groups = _scan(paths, min_size, types=normalised_types, exclude=set(exclude))
+    norm_types = _normalise_types(types)
+    groups = _scan(paths, min_size, max_size, norm_types, set(exclude), pattern)
 
     if not groups:
         console.print("[bold green]No duplicates found![/bold green]")
