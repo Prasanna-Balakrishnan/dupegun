@@ -58,7 +58,7 @@ dupegun scan ~/Downloads
 dupegun scan ~/Downloads ~/Documents ~/Desktop
 
 # Skip files smaller than 1 MB
-dupegun scan ~/Downloads --min-size 1000000
+dupegun scan ~/Downloads --min-size 1MB
 
 # Scan specific size ranges (e.g., between 1MB and 100MB)
 dupegun scan ~/Downloads --min-size 1MB --max-size 100MB
@@ -87,23 +87,63 @@ dupegun scan ~/Downloads --json results.json
 # Export results to CSV
 dupegun scan ~/Downloads --csv results.csv
 
+# Generate a self-contained HTML report you can open in any browser
+dupegun scan ~/Downloads --html report.html
+
 # Combine filters — only duplicate JPEGs, skip cache folders
 dupegun scan ~/Photos --type .jpg --exclude .thumbnails --summary
 ```
 
 ---
 
+### `stats` — folder statistics
+
+Get a quick overview of a folder: total files, total size, duplicate groups, and how much space is wasted.
+
+```bash
+dupegun stats <path> [options]
+```
+
+```bash
+# Basic stats for a folder
+dupegun stats ~/Downloads
+
+# Stats for images only
+dupegun stats ~/Photos --type .jpg --type .png
+
+# Stats excluding system folders
+dupegun stats C:\ --exclude Windows --exclude "Program Files"
+```
+
+Output example:
+```
+Scanned paths     ~/Downloads
+Total files       1,243
+Total size        45.2 GB
+Duplicate groups  87
+Duplicate files   201
+Wasted space      8.3 GB (18.4%)
+```
+
+---
+
 ### `compare` — cross-directory duplicates
 
-Find files that exist in *both* folders. Great for checking backups against your active drive.
+Find files that exist in *both* folders by content, not by name. Great for checking what your backup has in common with your active drive.
 
 ```bash
 dupegun compare <path_a> <path_b> [options]
 ```
 
 ```bash
-# Find files duplicated between your Downloads and your Backup drive
+# Find files duplicated between Downloads and a Backup drive
 dupegun compare ~/Downloads ~/Backup
+
+# Compare only images
+dupegun compare ~/Photos /Volumes/Backup/Photos --type .jpg --type .png
+
+# Compare and skip cache folders
+dupegun compare ~/Projects ~/Backup --exclude node_modules --exclude .git
 ```
 
 ---
@@ -127,8 +167,14 @@ dupegun delete ~/Downloads --no-dry-run --interactive
 # Auto-delete by age (only delete copies older than 30 days)
 dupegun delete ~/Downloads --older-than 30 --no-dry-run
 
-# Delete only duplicate images, skip cache
+# Delete only duplicate images, skip cache folders
 dupegun delete ~/Photos --type .jpg --type .png --exclude .thumbnails --no-dry-run
+
+# Save a log of everything deleted
+dupegun delete ~/Downloads --no-dry-run --log deleted.log
+
+# Combine age filter with log
+dupegun delete ~/Downloads --older-than 30 --no-dry-run --log deleted.log
 ```
 
 ---
@@ -179,7 +225,8 @@ Replaces duplicate files with hard links. Both file paths remain on your system,
 | `--dry-run` | delete, move, hardlink | Preview without making any changes | ON |
 | `--no-dry-run` | delete, move, hardlink | Actually perform the action | — |
 | `--interactive` | delete | Confirm each duplicate group before acting | OFF |
-| `--older-than <days>`| delete | Only delete copies modified more than this many days ago | — |
+| `--older-than <days>` | delete | Only delete copies modified more than this many days ago | — |
+| `--log <file>` | delete | Append a TSV log of every deleted file to this path | — |
 | `--min-size <size>` | all | Skip files smaller than this size (e.g. 1MB) | 1 byte |
 | `--max-size <size>` | all | Skip files larger than this size (e.g. 100MB) | no limit |
 | `--pattern <regex>` | all | Only scan filenames matching this regex | none |
@@ -189,6 +236,7 @@ Replaces duplicate files with hard links. Both file paths remain on your system,
 | `--count` | scan | Print group count and wasted space, then exit | OFF |
 | `--json <file>` | scan | Export scan results to JSON | — |
 | `--csv <file>` | scan | Export scan results to CSV | — |
+| `--html <file>` | scan | Export a self-contained HTML report | — |
 
 ---
 
@@ -235,6 +283,7 @@ Two files with different names but identical contents will always be detected.
 - Use `--no-dry-run` only when you are sure.
 - Use `--interactive` to confirm each group one by one.
 - Use `move` instead of `delete` if you want a safety net.
+- Use `--log` to keep a record of everything that was deleted.
 
 ---
 
@@ -264,8 +313,17 @@ dupegun scan ~/Downloads --summary
 dupegun scan ~/Downloads --count
 # 47 duplicate group(s) found, 2.3 GB wasted
 
+# Full folder overview
+dupegun stats ~/Downloads
+
+# Generate an HTML report and open it in a browser
+dupegun scan ~/Downloads --html report.html
+
+# Delete duplicates and keep a log of what was removed
+dupegun delete ~/Downloads --strategy newest --no-dry-run --log deleted.log
+
 # Find duplicates in Downloads, skip files under 500 KB
-dupegun scan C:\Users\You\Downloads --min-size 500000
+dupegun scan C:\Users\You\Downloads --min-size 500KB
 
 # Delete duplicate images keeping the newest copy
 dupegun delete ~/Photos --type .jpg --type .png --strategy newest --no-dry-run
@@ -287,6 +345,11 @@ dupegun scan ~/Downloads --pattern "Copy of.*" --min-size 1MB --max-size 50MB
 
 ## Changelog
 
+### v1.3.0
+- **`stats` command**: Show total files, total size, duplicate groups, duplicate files, and wasted space percentage for any folder.
+- **`--html` flag on `scan`**: Generate a self-contained HTML report with a dark theme — no external dependencies, just open in any browser.
+- **`--log` flag on `delete`**: Append a TSV log of every deleted file (timestamp, action, kept path, deleted path, size). Appends across multiple runs so you have a full audit trail.
+
 ### v1.2.0
 - **`compare` command**: Compare two directories to find cross-duplicates.
 - **`--older-than` flag**: Auto-delete files based on age (safeguards recent files).
@@ -295,19 +358,19 @@ dupegun scan ~/Downloads --pattern "Copy of.*" --min-size 1MB --max-size 50MB
 - Size parsing now supports human-readable formats (e.g., `1MB`, `2GB`).
 
 ### v1.1.0
-- `--type` filter: scan only specific file extensions (e.g. `--type .jpg --type .png`)
-- `--exclude` filter: skip folders by name (e.g. `--exclude node_modules`)
-- `--summary` flag: show total wasted space without printing every file
-- `--count` flag: print duplicate group count and wasted space in one line
-- `--type` and `--exclude` are available on all commands (`scan`, `delete`, `move`, `hardlink`)
+- **`--type` filter**: Scan only specific file extensions (e.g. `--type .jpg --type .png`).
+- **`--exclude` filter**: Skip folders by name (e.g. `--exclude node_modules`).
+- **`--summary` flag**: Show total wasted space without printing every file.
+- **`--count` flag**: Print duplicate group count and wasted space in one line.
+- `--type` and `--exclude` available on all commands (`scan`, `delete`, `move`, `hardlink`).
 
 ### v1.0.1
-- Minor packaging fixes
+- Minor packaging fixes.
 
 ### v1.0.0
-- Initial release: `scan`, `delete`, `move`, `hardlink` commands
-- 3-pass hashing engine
-- `--strategy`, `--dry-run`, `--interactive`, `--min-size`, `--json`, `--csv`
+- Initial release: `scan`, `delete`, `move`, `hardlink` commands.
+- 3-pass hashing engine.
+- `--strategy`, `--dry-run`, `--interactive`, `--min-size`, `--json`, `--csv`.
 
 ---
 
@@ -316,11 +379,11 @@ dupegun scan ~/Downloads --pattern "Copy of.*" --min-size 1MB --max-size 50MB
 Pull requests are welcome! To get started:
 
 ```bash
-git clone [https://github.com/YOUR_USERNAME/dupegun.git](https://github.com/YOUR_USERNAME/dupegun.git)
+git clone https://github.com/Prasanna-Balakrishnan/dupegun.git
 cd dupegun
 pip install -e .
 pip install pytest
-pytest tests/
+python -m pytest tests/ -v
 ```
 
 ---
@@ -334,5 +397,7 @@ MIT — see [LICENSE](LICENSE) for details.
 ## Author
 
 Made by **Prasanna B**
-LinkedIn: https://github.com/Prasanna-Balakrishnan/dupegun
+
+GitHub: https://github.com/Prasanna-Balakrishnan/dupegun
+
 If this tool helped you, consider giving it a star on GitHub!

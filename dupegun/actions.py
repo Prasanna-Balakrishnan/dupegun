@@ -1,6 +1,7 @@
 import os
 import time
 import shutil
+import datetime
 from pathlib import Path
 from rich.console import Console
 from rich.prompt import Confirm
@@ -18,33 +19,50 @@ def pick_keeper(paths: list, strategy: str) -> Path:
     return min(paths, key=lambda p: len(str(p)))
 
 
+def _write_log(log_path: str, entries: list) -> None:
+    """
+    Append deletion log entries to *log_path*.
+
+    Each entry is a dict with keys: timestamp, action, kept, deleted, size_bytes.
+    """
+    with open(log_path, "a", encoding="utf-8", newline="") as f:
+        for e in entries:
+            f.write(
+                f"{e['timestamp']}\t"
+                f"{e['action']}\t"
+                f"kept={e['kept']}\t"
+                f"deleted={e['deleted']}\t"
+                f"size={e['size_bytes']}\n"
+            )
+
+
 def delete_dupes(
     groups: dict,
     strategy: str = "shortest",
     dry_run: bool = True,
     interactive: bool = False,
     older_than: int = None,
+    log_path: str = None,
 ) -> None:
     """
     Delete duplicate files, keeping one copy per group.
 
     Args:
-        groups:      Hash → [Path, ...] from find_duplicates.
+        groups:      Hash -> [Path, ...] from find_duplicates.
         strategy:    Which copy to keep ('shortest', 'newest', 'oldest').
         dry_run:     If True, only preview — nothing is deleted.
         interactive: Prompt before each group.
-        older_than:  If set, only delete copies that are older than this many
-                     days. Files newer than the threshold are always kept,
-                     even if they are duplicates.
+        older_than:  Only delete copies older than this many days.
+        log_path:    If set, append a TSV log of every deletion to this file.
     """
     total_freed = 0
     cutoff_ts   = (time.time() - older_than * 86_400) if older_than else None
+    log_entries = []
 
     for hash_val, paths in groups.items():
         keeper    = pick_keeper(paths, strategy)
         to_delete = [p for p in paths if p != keeper]
 
-        # --older-than: further restrict to files modified before the cutoff
         if cutoff_ts is not None:
             to_delete = [
                 p for p in to_delete
@@ -72,6 +90,7 @@ def delete_dupes(
                 size = p.stat().st_size
             except (OSError, PermissionError):
                 size = 0
+
             if dry_run:
                 console.print(f"  [dim][DRY RUN] would delete {p}[/dim]")
             else:
@@ -79,6 +98,13 @@ def delete_dupes(
                     p.unlink()
                     total_freed += size
                     console.print(f"  [red]Deleted {p}[/red]")
+                    log_entries.append({
+                        "timestamp":  datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                        "action":     "deleted",
+                        "kept":       str(keeper),
+                        "deleted":    str(p),
+                        "size_bytes": size,
+                    })
                 except OSError as e:
                     console.print(f"  [yellow]Error: {e}[/yellow]")
 
@@ -86,6 +112,9 @@ def delete_dupes(
         console.print(
             f"\n[bold green]Freed {human_size(total_freed)}[/bold green]"
         )
+        if log_path and log_entries:
+            _write_log(log_path, log_entries)
+            console.print(f"[green]Log saved → {log_path}[/green]")
 
 
 def move_dupes(
