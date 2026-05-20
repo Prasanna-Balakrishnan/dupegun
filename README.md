@@ -20,7 +20,17 @@ No GUI. No bloat. Just fast, safe, and simple.
 ## Install
 
 ```bash
+# Core install
 pip install dupegun
+
+# With TUI browser
+pip install "dupegun[tui]"
+
+# With watch mode
+pip install "dupegun[watch]"
+
+# Everything
+pip install "dupegun[all]"
 ```
 
 Requires Python 3.9 or higher.
@@ -32,6 +42,12 @@ Requires Python 3.9 or higher.
 ```bash
 # Scan a folder and see all duplicates
 dupegun scan ~/Downloads
+
+# Interactive TUI browser
+dupegun tui ~/Downloads
+
+# Monitor a folder for new duplicates
+dupegun watch ~/Downloads
 
 # Preview what would be deleted (nothing actually deleted)
 dupegun delete ~/Downloads --strategy newest
@@ -90,9 +106,84 @@ dupegun scan ~/Downloads --csv results.csv
 # Generate a self-contained HTML report you can open in any browser
 dupegun scan ~/Downloads --html report.html
 
-# Combine filters — only duplicate JPEGs, skip cache folders
-dupegun scan ~/Photos --type .jpg --exclude .thumbnails --summary
+# Use settings from a custom config file
+dupegun scan ~/Downloads --config ~/myconfig.toml
 ```
+
+---
+
+### `tui` — interactive terminal browser
+
+Browse duplicates visually, mark files for deletion, and act — all from your keyboard.
+
+```bash
+# Requires: pip install "dupegun[tui]"
+dupegun tui ~/Downloads
+dupegun tui ~/Downloads --strategy newest
+dupegun tui ~/Downloads --no-dry-run   # actually delete (default is dry-run)
+```
+
+**Controls:**
+
+| Key | Action |
+|---|---|
+| Arrow keys / j k | Navigate files |
+| Space | Toggle file for deletion |
+| A | Mark all duplicates in group (keep first) |
+| U | Unmark all in group |
+| D | Delete all marked files in current group |
+| S | Skip to next group |
+| Q / Escape | Quit |
+
+---
+
+### `watch` — monitor for new duplicates
+
+Watch a folder in real time and get an alert whenever a duplicate file appears.
+
+```bash
+# Requires: pip install "dupegun[watch]"
+dupegun watch ~/Downloads
+
+# Watch only for duplicate images
+dupegun watch ~/Photos --type .jpg --type .png
+
+# Watch and skip cache folders
+dupegun watch ~/Projects --exclude node_modules --exclude .git
+```
+
+Press **Ctrl+C** to stop watching.
+
+---
+
+### `config` — manage your config file
+
+Save your preferred settings so you don't type them every time.
+
+```bash
+# Create a default ~/.dupegun.toml
+dupegun config --init
+
+# Print current config
+dupegun config --show
+
+# Show the config file path
+dupegun config --path
+```
+
+**Example `~/.dupegun.toml`:**
+
+```toml
+[defaults]
+strategy = "newest"
+min_size = "100KB"
+exclude  = ["node_modules", ".git", "Windows", "Program Files"]
+
+[plugins]
+load = ["~/my_plugin.py"]
+```
+
+All CLI flags still override config values.
 
 ---
 
@@ -173,8 +264,8 @@ dupegun delete ~/Photos --type .jpg --type .png --exclude .thumbnails --no-dry-r
 # Save a log of everything deleted
 dupegun delete ~/Downloads --no-dry-run --log deleted.log
 
-# Combine age filter with log
-dupegun delete ~/Downloads --older-than 30 --no-dry-run --log deleted.log
+# Use a plugin strategy
+dupegun delete ~/Downloads --plugin my_plugin.py --strategy by_name --no-dry-run
 ```
 
 ---
@@ -193,8 +284,6 @@ dupegun move ~/Downloads --dest ~/quarantine
 dupegun move ~/Downloads --dest ~/quarantine --no-dry-run
 ```
 
-Keeps the original copy in place. Moves all duplicates to the destination folder for you to review manually.
-
 ---
 
 ### `hardlink` — save space, keep all paths
@@ -211,7 +300,45 @@ dupegun hardlink ~/Photos
 dupegun hardlink ~/Photos --no-dry-run
 ```
 
-Replaces duplicate files with hard links. Both file paths remain on your system, but they share the same physical disk space — no data is lost.
+---
+
+## Plugin system
+
+Extend dupegun with custom strategies without touching the core code.
+
+**Create a plugin file:**
+
+```python
+# my_plugin.py
+from dupegun.plugins import register_strategy
+
+@register_strategy("by_name")
+def keep_alphabetically(paths):
+    """Keep the file whose name comes first alphabetically."""
+    return min(paths, key=lambda p: p.name.lower())
+
+@register_strategy("largest")
+def keep_largest(paths):
+    """Keep the largest file."""
+    return max(paths, key=lambda p: p.stat().st_size)
+```
+
+**Use it:**
+
+```bash
+dupegun delete ~/Downloads --plugin my_plugin.py --strategy by_name --no-dry-run
+```
+
+**Or auto-load via config:**
+
+```toml
+# ~/.dupegun.toml
+[plugins]
+load = ["~/my_plugin.py"]
+
+[defaults]
+strategy = "by_name"
+```
 
 ---
 
@@ -219,16 +346,16 @@ Replaces duplicate files with hard links. Both file paths remain on your system,
 
 | Option | Commands | Description | Default |
 |---|---|---|---|
-| `--strategy shortest` | delete, move, hardlink | Keep the file with the shortest path | Default |
-| `--strategy newest` | delete, move, hardlink | Keep the most recently modified copy | — |
-| `--strategy oldest` | delete, move, hardlink | Keep the oldest copy | — |
-| `--dry-run` | delete, move, hardlink | Preview without making any changes | ON |
-| `--no-dry-run` | delete, move, hardlink | Actually perform the action | — |
+| `--strategy <name>` | delete, move, hardlink, tui | Which copy to keep: shortest, newest, oldest, or plugin name | shortest |
+| `--dry-run` | delete, move, hardlink, tui | Preview without making any changes | ON |
+| `--no-dry-run` | delete, move, hardlink, tui | Actually perform the action | — |
 | `--interactive` | delete | Confirm each duplicate group before acting | OFF |
 | `--older-than <days>` | delete | Only delete copies modified more than this many days ago | — |
-| `--log <file>` | delete | Append a TSV log of every deleted file to this path | — |
-| `--min-size <size>` | all | Skip files smaller than this size (e.g. 1MB) | 1 byte |
-| `--max-size <size>` | all | Skip files larger than this size (e.g. 100MB) | no limit |
+| `--log <file>` | delete | Append a TSV log of every deleted file | — |
+| `--plugin <file>` | delete, tui | Load a plugin .py file (repeatable) | — |
+| `--config <file>` | all | Path to a config TOML file | ~/.dupegun.toml |
+| `--min-size <size>` | all | Skip files smaller than this (e.g. 1MB) | 1 byte |
+| `--max-size <size>` | all | Skip files larger than this (e.g. 100MB) | no limit |
 | `--pattern <regex>` | all | Only scan filenames matching this regex | none |
 | `--type <ext>` | all | Only include files with this extension (repeatable) | all types |
 | `--exclude <name>` | all | Skip any folder with this name (repeatable) | none |
@@ -255,8 +382,6 @@ Pass 3 — Full SHA-256 hash of remaining candidates
          (guaranteed accurate duplicate detection)
 ```
 
-This approach is significantly faster than hashing every file — large folders with thousands of files are handled quickly.
-
 ---
 
 ## Supported file types
@@ -273,17 +398,16 @@ dupegun works on **all file types** — it compares raw file contents, not names
 | Code | `.py` `.js` `.html` `.css` `.java` |
 | Everything else | Any file, any extension |
 
-Two files with different names but identical contents will always be detected.
-
 ---
 
 ## Safety
 
-- **Dry-run is ON by default** on every destructive command (`delete`, `move`, `hardlink`). You always see a preview first.
+- **Dry-run is ON by default** on every destructive command. You always see a preview first.
 - Use `--no-dry-run` only when you are sure.
 - Use `--interactive` to confirm each group one by one.
 - Use `move` instead of `delete` if you want a safety net.
-- Use `--log` to keep a record of everything that was deleted.
+- Use `--log` to keep a full audit trail of deletions.
+- The TUI defaults to dry-run mode — use `--no-dry-run` to enable live deletion.
 
 ---
 
@@ -300,18 +424,14 @@ Two files with different names but identical contents will always be detected.
 ## Examples
 
 ```bash
-# Find duplicate images in Downloads
-dupegun scan ~/Downloads --type .jpg --type .png --type .gif
+# Interactive browse and delete
+dupegun tui ~/Downloads --strategy newest
 
-# Find duplicate videos, skip system folders
-dupegun scan C:\ --type .mp4 --type .mkv --exclude Windows --exclude "Program Files"
+# Watch Downloads for duplicate photos in real time
+dupegun watch ~/Downloads --type .jpg --type .png
 
-# Quick summary — how much space am I wasting?
-dupegun scan ~/Downloads --summary
-
-# Just the count
-dupegun scan ~/Downloads --count
-# 47 duplicate group(s) found, 2.3 GB wasted
+# Set up your config once, never type flags again
+dupegun config --init
 
 # Full folder overview
 dupegun stats ~/Downloads
@@ -319,50 +439,45 @@ dupegun stats ~/Downloads
 # Generate an HTML report and open it in a browser
 dupegun scan ~/Downloads --html report.html
 
-# Delete duplicates and keep a log of what was removed
-dupegun delete ~/Downloads --strategy newest --no-dry-run --log deleted.log
+# Delete duplicates with a plugin strategy and keep a log
+dupegun delete ~/Downloads --plugin my_plugin.py --strategy by_name --no-dry-run --log deleted.log
 
-# Find duplicates in Downloads, skip files under 500 KB
-dupegun scan C:\Users\You\Downloads --min-size 500KB
+# Find duplicate images, skip system folders
+dupegun scan ~/Downloads --type .jpg --type .png --exclude cache --summary
 
-# Delete duplicate images keeping the newest copy
-dupegun delete ~/Photos --type .jpg --type .png --strategy newest --no-dry-run
-
-# Move duplicates from two folders into one quarantine folder
-dupegun move C:\Photos C:\Backup --dest C:\quarantine --no-dry-run
-
-# Export full report to CSV and open in Excel
-dupegun scan C:\Users\You\Documents --csv report.csv
-
-# Compare active projects to a backup drive to find cross-duplicates
+# Compare active projects to a backup drive
 dupegun compare ~/Projects /Volumes/BackupDrive/Projects
-
-# Find duplicates matching a specific filename pattern and size range
-dupegun scan ~/Downloads --pattern "Copy of.*" --min-size 1MB --max-size 50MB
 ```
 
 ---
 
 ## Changelog
 
+### v2.0.0
+- **`tui` command**: Interactive terminal UI — browse duplicate groups, mark files, delete with keyboard shortcuts. Requires `pip install "dupegun[tui]"`.
+- **`watch` command**: Monitor a folder in real time and alert when a duplicate appears. Requires `pip install "dupegun[watch]"`.
+- **`config` command**: Create and manage `~/.dupegun.toml` to save your preferred defaults.
+- **Plugin system**: Register custom keep-strategies with `@register_strategy("name")` and load plugins via `--plugin` or the config file.
+- **`--config` flag** on all commands: use a custom config file.
+- `tomli` added as a dependency for Python < 3.11 (TOML parsing).
+
 ### v1.3.0
-- **`stats` command**: Show total files, total size, duplicate groups, duplicate files, and wasted space percentage for any folder.
-- **`--html` flag on `scan`**: Generate a self-contained HTML report with a dark theme — no external dependencies, just open in any browser.
-- **`--log` flag on `delete`**: Append a TSV log of every deleted file (timestamp, action, kept path, deleted path, size). Appends across multiple runs so you have a full audit trail.
+- **`stats` command**: Show total files, total size, duplicate groups, duplicate files, and wasted space percentage.
+- **`--html` flag on `scan`**: Generate a self-contained HTML report.
+- **`--log` flag on `delete`**: Append a TSV audit log of every deleted file.
 
 ### v1.2.0
 - **`compare` command**: Compare two directories to find cross-duplicates.
-- **`--older-than` flag**: Auto-delete files based on age (safeguards recent files).
-- **`--max-size` flag**: Combine with `--min-size` to scan specific size ranges.
+- **`--older-than` flag**: Auto-delete files based on age.
+- **`--max-size` flag**: Combine with `--min-size` for size ranges.
 - **`--pattern` flag**: Filter scans by regex filename patterns.
-- Size parsing now supports human-readable formats (e.g., `1MB`, `2GB`).
+- Size parsing supports human-readable formats (e.g., `1MB`, `2GB`).
 
 ### v1.1.0
-- **`--type` filter**: Scan only specific file extensions (e.g. `--type .jpg --type .png`).
-- **`--exclude` filter**: Skip folders by name (e.g. `--exclude node_modules`).
-- **`--summary` flag**: Show total wasted space without printing every file.
-- **`--count` flag**: Print duplicate group count and wasted space in one line.
-- `--type` and `--exclude` available on all commands (`scan`, `delete`, `move`, `hardlink`).
+- **`--type` filter**: Scan only specific file extensions.
+- **`--exclude` filter**: Skip folders by name.
+- **`--summary` flag**: Show total wasted space without listing every file.
+- **`--count` flag**: Print group count and wasted space in one line.
 
 ### v1.0.1
 - Minor packaging fixes.
@@ -381,7 +496,7 @@ Pull requests are welcome! To get started:
 ```bash
 git clone https://github.com/Prasanna-Balakrishnan/dupegun.git
 cd dupegun
-pip install -e .
+pip install -e ".[all]"
 pip install pytest
 python -m pytest tests/ -v
 ```

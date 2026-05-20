@@ -11,20 +11,30 @@ console = Console()
 
 
 def pick_keeper(paths: list, strategy: str) -> Path:
+    """
+    Select which file to keep from a duplicate group.
+
+    Built-in strategies: shortest, newest, oldest.
+    Plugin strategies are looked up from the plugin registry.
+    """
     if strategy == "newest":
         return max(paths, key=lambda p: p.stat().st_mtime)
     if strategy == "oldest":
         return min(paths, key=lambda p: p.stat().st_mtime)
-    # default: shortest path
+    if strategy == "shortest":
+        return min(paths, key=lambda p: len(str(p)))
+
+    # Try plugin registry
+    from .plugins import get_strategy
+    fn = get_strategy(strategy)
+    if fn is not None:
+        return fn(paths)
+
+    # Fallback to shortest
     return min(paths, key=lambda p: len(str(p)))
 
 
 def _write_log(log_path: str, entries: list) -> None:
-    """
-    Append deletion log entries to *log_path*.
-
-    Each entry is a dict with keys: timestamp, action, kept, deleted, size_bytes.
-    """
     with open(log_path, "a", encoding="utf-8", newline="") as f:
         for e in entries:
             f.write(
@@ -44,17 +54,6 @@ def delete_dupes(
     older_than: int = None,
     log_path: str = None,
 ) -> None:
-    """
-    Delete duplicate files, keeping one copy per group.
-
-    Args:
-        groups:      Hash -> [Path, ...] from find_duplicates.
-        strategy:    Which copy to keep ('shortest', 'newest', 'oldest').
-        dry_run:     If True, only preview — nothing is deleted.
-        interactive: Prompt before each group.
-        older_than:  Only delete copies older than this many days.
-        log_path:    If set, append a TSV log of every deletion to this file.
-    """
     total_freed = 0
     cutoff_ts   = (time.time() - older_than * 86_400) if older_than else None
     log_entries = []
@@ -109,9 +108,7 @@ def delete_dupes(
                     console.print(f"  [yellow]Error: {e}[/yellow]")
 
     if not dry_run:
-        console.print(
-            f"\n[bold green]Freed {human_size(total_freed)}[/bold green]"
-        )
+        console.print(f"\n[bold green]Freed {human_size(total_freed)}[/bold green]")
         if log_path and log_entries:
             _write_log(log_path, log_entries)
             console.print(f"[green]Log saved → {log_path}[/green]")
@@ -135,9 +132,7 @@ def move_dupes(
                 target = dest / f"{hash_val[:8]}_{p.name}"
 
             if dry_run:
-                console.print(
-                    f"[dim][DRY RUN] would move {p} → {target}[/dim]"
-                )
+                console.print(f"[dim][DRY RUN] would move {p} → {target}[/dim]")
             else:
                 shutil.move(str(p), str(target))
                 console.print(f"[yellow]Moved {p} → {target}[/yellow]")
@@ -154,15 +149,11 @@ def hardlink_dupes(
             if p == keeper:
                 continue
             if dry_run:
-                console.print(
-                    f"[dim][DRY RUN] would hardlink {p} → {keeper}[/dim]"
-                )
+                console.print(f"[dim][DRY RUN] would hardlink {p} → {keeper}[/dim]")
             else:
                 try:
                     p.unlink()
                     os.link(keeper, p)
-                    console.print(
-                        f"[cyan]Hardlinked {p} → {keeper}[/cyan]"
-                    )
+                    console.print(f"[cyan]Hardlinked {p} → {keeper}[/cyan]")
                 except OSError as e:
                     console.print(f"[yellow]Error: {e}[/yellow]")
