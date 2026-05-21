@@ -31,20 +31,6 @@ def walk_files(
     exclude: Optional[Set[str]] = None,
     pattern: Optional[str] = None,
 ) -> Iterator[Path]:
-    """
-    Recursively yield files under *root*.
-
-    Args:
-        root:     Directory to walk.
-        min_size: Skip files smaller than this many bytes.
-        max_size: Skip files larger than this many bytes (None = no limit).
-        types:    If given, only yield files whose suffix (e.g. '.jpg') is in
-                  this set. Comparison is case-insensitive.
-        exclude:  Folder *names* (not full paths) to skip entirely, e.g.
-                  {'node_modules', '.git', 'Windows'}.
-        pattern:  Regex pattern matched against the filename (not full path).
-                  e.g. r'Copy of.*' or r'.*\\.jpg'. Case-insensitive.
-    """
     norm_types   = {t.lower() for t in types}   if types   else None
     norm_exclude = {e.lower() for e in exclude}  if exclude else None
     compiled_pat = re.compile(pattern, re.IGNORECASE) if pattern else None
@@ -59,11 +45,9 @@ def walk_files(
         for name in filenames:
             p = Path(dirpath) / name
 
-            # Extension filter
             if norm_types and p.suffix.lower() not in norm_types:
                 continue
 
-            # Regex filename filter
             if compiled_pat and not compiled_pat.search(name):
                 continue
 
@@ -87,7 +71,6 @@ def find_duplicates(
     exclude: Optional[Set[str]] = None,
     pattern: Optional[str] = None,
 ) -> dict:
-    """Find duplicate files across all *roots* and return a hash → [Path] dict."""
     by_size = defaultdict(list)
     all_files = [
         f
@@ -150,12 +133,6 @@ def find_cross_duplicates(
     pattern: Optional[str] = None,
     progress_cb=None,
 ) -> dict:
-    """
-    Find files that exist in BOTH *root_a* and *root_b* (cross-directory duplicates).
-
-    Returns a dict: hash → {'a': [Path, ...], 'b': [Path, ...]}
-    Only hashes that appear in both sides are included.
-    """
     walk_kwargs = dict(
         min_size=min_size,
         max_size=max_size,
@@ -167,10 +144,9 @@ def find_cross_duplicates(
     files_a = list(walk_files(root_a, **walk_kwargs))
     files_b = list(walk_files(root_b, **walk_kwargs))
 
-    # Build hash → [Path] for side A
     hashes_a: dict = defaultdict(list)
     total = len(files_a) + len(files_b)
-    done = 0
+    done  = 0
     for path in files_a:
         if progress_cb:
             progress_cb(done + 1, total, path)
@@ -180,7 +156,6 @@ def find_cross_duplicates(
         except (PermissionError, OSError):
             pass
 
-    # Build hash → [Path] for side B — only hash if it might match A
     hashes_b: dict = defaultdict(list)
     for path in files_b:
         if progress_cb:
@@ -188,12 +163,11 @@ def find_cross_duplicates(
         done += 1
         try:
             h = _hash_file(path)
-            if h in hashes_a:          # only keep if already seen in A
+            if h in hashes_a:
                 hashes_b[h].append(path)
         except (PermissionError, OSError):
             pass
 
-    # Keep only hashes present in both sides
     result = {}
     for h, paths_a in hashes_a.items():
         if h in hashes_b:

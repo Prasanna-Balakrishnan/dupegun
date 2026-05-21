@@ -1,17 +1,19 @@
+import time
 import click
 from pathlib import Path
 from rich.console import Console
 from rich.progress import (
     Progress, SpinnerColumn,
-    TextColumn, BarColumn, TaskProgressColumn,
+    TextColumn, BarColumn, TaskProgressColumn, TimeRemainingColumn,
 )
 
 from .scanner import find_duplicates, find_cross_duplicates, walk_files
 from .reporter import (
     print_table, print_summary, print_count, print_stats,
-    print_comparison, export_json, export_csv, export_html,
+    print_comparison, print_dry_run_summary,
+    export_json, export_csv, export_html,
 )
-from .actions import delete_dupes, move_dupes, hardlink_dupes, pick_keeper
+from .actions import delete_dupes, move_dupes, hardlink_dupes
 from .plugins import load_plugins, list_strategies, get_strategy
 from .config import load_config, generate_default_config, config_exists
 
@@ -54,20 +56,9 @@ def _normalise_types(types: tuple):
     return {t if t.startswith(".") else f".{t}" for t in types}
 
 
-def _merge_config(cfg: dict, **cli_kwargs) -> dict:
-    """
-    Merge config-file defaults with CLI values.
-    CLI values always win (non-None / non-empty beats config).
-    """
-    merged = dict(cfg)
-    for k, v in cli_kwargs.items():
-        if v is not None and v != () and v != "1" or k not in merged:
-            merged[k] = v
-    return merged
-
-
 def _scan(paths, min_size_str, max_size_str=None, types=None,
           exclude=None, pattern=None):
+    """Scan paths for duplicates with an ETA-enabled progress bar."""
     roots    = [Path(p) for p in paths]
     min_size = _parse_size(min_size_str) if isinstance(min_size_str, str) else min_size_str
     max_size = _parse_size(max_size_str) if max_size_str else None
@@ -77,6 +68,7 @@ def _scan(paths, min_size_str, max_size_str=None, types=None,
         TextColumn("[progress.description]{task.description}"),
         BarColumn(),
         TaskProgressColumn(),
+        TimeRemainingColumn(),          # ← ETA column (new in v2.1.0)
         transient=True,
     ) as progress:
         task = progress.add_task("Scanning...", total=None)
@@ -100,7 +92,6 @@ def _scan(paths, min_size_str, max_size_str=None, types=None,
 
 
 def _common_scan_opts(fn):
-    """Options shared by scan, delete, move, hardlink, tui, watch."""
     fn = click.option(
         "--min-size", default="1",
         help="Minimum file size (e.g. 1, 500B, 1KB, 1MB). Default: 1",
@@ -141,7 +132,7 @@ def _config_opt(fn):
 # ── CLI group ─────────────────────────────────────────────────────────────────
 
 @click.group()
-@click.version_option("2.0.0", prog_name="dupegun")
+@click.version_option("2.1.0", prog_name="dupegun")
 def main():
     """dupegun — find and destroy duplicate files.
 
@@ -158,8 +149,8 @@ def main():
 @_config_opt
 @click.option("--summary", is_flag=True,
               help="Print total wasted space only, no file list")
-@click.option("--count",   is_flag=True,
-              help="Print duplicate group count and wasted space, then exit")
+@click.option("--count", is_flag=True,
+              help="Print duplicate group count with colorized bar")
 @click.option("--json", "out_json", default=None,
               help="Export results to a JSON file")
 @click.option("--csv",  "out_csv",  default=None,
@@ -170,7 +161,7 @@ def scan(paths, min_size, max_size, types, exclude, pattern, config_path,
          summary, count, out_json, out_csv, out_html):
     """Scan folders and list all duplicate files."""
     cfg = load_config(config_path)
-    norm_types = _normalise_types(types or cfg.get("types", ()))
+    norm_types  = _normalise_types(types or cfg.get("types", ()))
     eff_exclude = set(exclude) | set(cfg.get("exclude", ()))
     eff_min     = min_size if min_size != "1" else cfg.get("min_size", "1")
     eff_max     = max_size or cfg.get("max_size")
@@ -184,7 +175,18 @@ def scan(paths, min_size, max_size, types, exclude, pattern, config_path,
         return
 
     if count:
-        print_count(groups)
+        # Calculate total size for the % bar
+        roots = [Path(p) for p in paths]
+        all_files = [
+            f for root in roots
+            for f in walk_files(root,
+                                min_size=_parse_size(eff_min) if isinstance(eff_min, str) else eff_min,
+                                max_size=_parse_size(eff_max) if eff_max else None,
+                                types=norm_types, exclude=eff_exclude,
+                                pattern=eff_pattern)
+        ]
+        total_size = sum(p.stat().st_size for p in all_files if p.exists())
+        print_count(groups, total_size=total_size)
         return
 
     if summary:
@@ -199,6 +201,28 @@ def scan(paths, min_size, max_size, types, exclude, pattern, config_path,
     if out_html:
         export_html(groups, out_html)
 
+# ── restore ───────────────────────────────────────────────────────────────────
+
+@main.command()
+@click.argument("log_file", type=click.Path(exists=True))
+@click.option("--dry-run/--no-dry-run", default=True,
+              help="Preview without restoring (default: ON)")
+def restore(log_file, dry_run):
+    """Restore files deleted by a previous `dupegun delete --log` run.
+
+    \b
+    Reads the TSV log file and copies the kept file back to where each
+    deleted duplicate used to live — reversing the deletion.
+
+    \b
+    Example:
+        dupegun delete ~/Downloads --no-dry-run --log deleted.log
+        dupegun restore deleted.log          # preview
+        dupegun restore deleted.log --no-dry-run  # actually restore
+    """
+    from .restore import restore_from_log
+    restore_from_log(log_file, dry_run=dry_run)
+
 # ── tui ───────────────────────────────────────────────────────────────────────
 
 @main.command()
@@ -208,9 +232,9 @@ def scan(paths, min_size, max_size, types, exclude, pattern, config_path,
 @_plugin_opt
 @_config_opt
 @click.option("--strategy", default=None,
-              help="Which copy to keep by default in the TUI (default: shortest)")
+              help="Which copy to keep by default in the TUI")
 @click.option("--dry-run/--no-dry-run", default=True,
-              help="Preview mode — no files are deleted (default: ON)")
+              help="Preview mode — no files deleted (default: ON)")
 def tui(paths, min_size, max_size, types, exclude, pattern,
         plugins, config_path, strategy, dry_run):
     """Browse and delete duplicates in an interactive terminal UI.
@@ -231,11 +255,11 @@ def tui(paths, min_size, max_size, types, exclude, pattern,
     cfg = load_config(config_path)
     load_plugins(list(plugins) + cfg.get("plugin_files", []))
 
-    norm_types  = _normalise_types(types or cfg.get("types", ()))
-    eff_exclude = set(exclude) | set(cfg.get("exclude", ()))
-    eff_min     = min_size if min_size != "1" else cfg.get("min_size", "1")
-    eff_max     = max_size or cfg.get("max_size")
-    eff_pattern = pattern or cfg.get("pattern")
+    norm_types   = _normalise_types(types or cfg.get("types", ()))
+    eff_exclude  = set(exclude) | set(cfg.get("exclude", ()))
+    eff_min      = min_size if min_size != "1" else cfg.get("min_size", "1")
+    eff_max      = max_size or cfg.get("max_size")
+    eff_pattern  = pattern or cfg.get("pattern")
     eff_strategy = strategy or cfg.get("strategy", "shortest")
 
     console.print(f"\n[bold]dupegun tui[/bold] — scanning {len(paths)} path(s)...\n")
@@ -275,32 +299,17 @@ def watch(path, min_size, max_size, types, exclude, pattern, config_path):
     eff_min     = _parse_size(eff_min_str) if isinstance(eff_min_str, str) else eff_min_str
     eff_max     = _parse_size(eff_max_str) if eff_max_str else None
 
-    run_watch(
-        Path(path),
-        min_size=eff_min,
-        max_size=eff_max,
-        types=norm_types,
-        exclude=eff_exclude,
-    )
+    run_watch(Path(path), min_size=eff_min, max_size=eff_max,
+              types=norm_types, exclude=eff_exclude)
 
 # ── config ────────────────────────────────────────────────────────────────────
 
 @main.command("config")
-@click.option("--init", is_flag=True,
-              help="Create a default ~/.dupegun.toml if it doesn't exist")
-@click.option("--show", is_flag=True,
-              help="Print the current config file contents")
-@click.option("--path", "show_path", is_flag=True,
-              help="Print the path to the config file")
+@click.option("--init",      is_flag=True, help="Create a default ~/.dupegun.toml")
+@click.option("--show",      is_flag=True, help="Print the current config file contents")
+@click.option("--path", "show_path", is_flag=True, help="Print the config file path")
 def config_cmd(init, show, show_path):
-    """Manage the dupegun config file (~/.dupegun.toml).
-
-    \b
-    Examples:
-        dupegun config --init      # create a default config
-        dupegun config --show      # print current config
-        dupegun config --path      # show where the config lives
-    """
+    """Manage the dupegun config file (~/.dupegun.toml)."""
     from .config import DEFAULT_CONFIG_PATH
 
     if show_path:
@@ -309,14 +318,10 @@ def config_cmd(init, show, show_path):
 
     if init:
         if config_exists():
-            console.print(
-                f"[yellow]Config already exists:[/yellow] {DEFAULT_CONFIG_PATH}"
-            )
+            console.print(f"[yellow]Config already exists:[/yellow] {DEFAULT_CONFIG_PATH}")
         else:
             DEFAULT_CONFIG_PATH.write_text(generate_default_config(), encoding="utf-8")
-            console.print(
-                f"[green]Created config:[/green] {DEFAULT_CONFIG_PATH}"
-            )
+            console.print(f"[green]Created config:[/green] {DEFAULT_CONFIG_PATH}")
         return
 
     if show:
@@ -329,7 +334,6 @@ def config_cmd(init, show, show_path):
             console.print(DEFAULT_CONFIG_PATH.read_text(encoding="utf-8"))
         return
 
-    # No flag — print help
     ctx = click.get_current_context()
     console.print(ctx.get_help())
 
@@ -361,7 +365,8 @@ def stats(paths, min_size, max_size, types, exclude, pattern, config_path):
     ]
 
     with Progress(SpinnerColumn(), TextColumn("[progress.description]{task.description}"),
-                  BarColumn(), TaskProgressColumn(), transient=True) as progress:
+                  BarColumn(), TaskProgressColumn(), TimeRemainingColumn(),
+                  transient=True) as progress:
         task = progress.add_task("Hashing...", total=None)
         def cb(done, total, path):
             progress.update(task, completed=done, total=total,
@@ -395,7 +400,8 @@ def compare(path_a, path_b, min_size, max_size, types, exclude, pattern):
     )
 
     with Progress(SpinnerColumn(), TextColumn("[progress.description]{task.description}"),
-                  BarColumn(), TaskProgressColumn(), transient=True) as progress:
+                  BarColumn(), TaskProgressColumn(), TimeRemainingColumn(),
+                  transient=True) as progress:
         task = progress.add_task("Comparing...", total=None)
         def cb(done, total, path):
             progress.update(task, completed=done, total=total,
@@ -413,7 +419,7 @@ def compare(path_a, path_b, min_size, max_size, types, exclude, pattern):
 @click.argument("paths", nargs=-1, required=True,
                 type=click.Path(exists=True))
 @click.option("--strategy", default=None,
-              help="Which copy to keep: shortest|newest|oldest|<plugin> (default: shortest)")
+              help="Which copy to keep: shortest|newest|oldest|<plugin>")
 @click.option("--dry-run/--no-dry-run", default=True)
 @click.option("--interactive", is_flag=True)
 @click.option("--older-than", default=None, type=int, metavar="DAYS")
@@ -427,11 +433,10 @@ def delete(paths, strategy, dry_run, interactive, older_than, log_path,
     cfg = load_config(config_path)
     load_plugins(list(plugins) + cfg.get("plugin_files", []))
 
-    norm_types  = _normalise_types(types or cfg.get("types", ()))
-    eff_exclude = set(exclude) | set(cfg.get("exclude", ()))
+    norm_types   = _normalise_types(types or cfg.get("types", ()))
+    eff_exclude  = set(exclude) | set(cfg.get("exclude", ()))
     eff_strategy = strategy or cfg.get("strategy", "shortest")
 
-    # Validate strategy (built-in + plugins)
     builtin = {"shortest", "newest", "oldest"}
     if eff_strategy not in builtin and get_strategy(eff_strategy) is None:
         raise click.BadParameter(
@@ -447,19 +452,23 @@ def delete(paths, strategy, dry_run, interactive, older_than, log_path,
         return
 
     if dry_run:
-        console.print(
-            "[yellow]DRY RUN — nothing will be deleted. "
-            "Use --no-dry-run to actually delete.[/yellow]\n"
-        )
+        # Show detailed dry-run summary with per-group breakdown
+        print_dry_run_summary(groups, strategy=eff_strategy)
+    else:
+        if older_than:
+            console.print(
+                f"[dim]--older-than {older_than}: only deleting copies "
+                f"modified more than {older_than} day(s) ago.[/dim]\n"
+            )
 
-    if older_than:
-        console.print(
-            f"[dim]--older-than {older_than}: only deleting copies "
-            f"modified more than {older_than} day(s) ago.[/dim]\n"
-        )
-
-    delete_dupes(groups, strategy=eff_strategy, dry_run=dry_run,
-                 interactive=interactive, older_than=older_than, log_path=log_path)
+    delete_dupes(
+        groups,
+        strategy=eff_strategy,
+        dry_run=dry_run,
+        interactive=interactive,
+        older_than=older_than,
+        log_path=log_path,
+    )
 
 # ── move ──────────────────────────────────────────────────────────────────────
 

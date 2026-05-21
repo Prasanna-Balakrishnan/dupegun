@@ -4,6 +4,8 @@ import datetime
 from pathlib import Path
 from rich.table import Table
 from rich.console import Console
+from rich.progress import BarColumn, Progress, TextColumn
+from rich.panel import Panel
 
 console = Console()
 
@@ -72,22 +74,97 @@ def print_summary(groups: dict) -> None:
     )
 
 
-def print_count(groups: dict) -> None:
-    """Print duplicate group count and wasted space, then exit."""
+def print_count(groups: dict, total_size: int = 0) -> None:
+    """
+    Print duplicate group count and wasted space with a colorized progress bar.
+
+    Args:
+        groups:     Duplicate groups from find_duplicates.
+        total_size: Total size of all scanned files (for % calculation).
+                    Pass 0 to skip the percentage bar.
+    """
     total_wasted = _wasted(groups)
+    dup_files    = sum(len(p) for p in groups.values())
+    pct          = (total_wasted / total_size * 100) if total_size else 0.0
+
+    # Colorize based on waste percentage
+    if pct >= 30:
+        bar_color = "red"
+    elif pct >= 10:
+        bar_color = "yellow"
+    else:
+        bar_color = "green"
+
+    console.print()
     console.print(
-        f"\n[bold]{len(groups)}[/bold] duplicate group(s) found, "
-        f"[red]{human_size(total_wasted)}[/red] wasted\n"
+        f"[bold]{len(groups)}[/bold] duplicate group(s)  "
+        f"[dim]|[/dim]  "
+        f"[bold]{dup_files}[/bold] duplicate file(s)  "
+        f"[dim]|[/dim]  "
+        f"[{bar_color}]{human_size(total_wasted)}[/{bar_color}] wasted"
+        + (f"  [dim]({pct:.1f}% of total)[/dim]" if total_size else "")
+    )
+
+    if total_size and pct > 0:
+        # Draw a simple ASCII bar
+        bar_width  = 40
+        filled     = max(1, int(bar_width * pct / 100))
+        empty      = bar_width - filled
+        bar        = f"[{bar_color}]{'█' * filled}[/{bar_color}][dim]{'░' * empty}[/dim]"
+        console.print(f"  {bar}  [dim]{pct:.1f}%[/dim]")
+
+    console.print()
+
+
+def print_dry_run_summary(groups: dict, strategy: str = "shortest") -> None:
+    """
+    Print a detailed dry-run summary showing exactly what would be freed.
+
+    Shows per-group breakdown: which file would be kept, which deleted,
+    and how much space each deletion would recover.
+    """
+    from .actions import pick_keeper
+
+    total_would_free = 0
+    total_files      = 0
+
+    console.print(
+        "\n[bold yellow]DRY RUN SUMMARY[/bold yellow] — "
+        f"strategy: [cyan]{strategy}[/cyan]\n"
+    )
+
+    for i, (hash_val, paths) in enumerate(groups.items(), 1):
+        keeper    = pick_keeper(paths, strategy)
+        to_delete = [p for p in paths if p != keeper]
+
+        try:
+            size = keeper.stat().st_size
+        except (OSError, PermissionError):
+            size = 0
+
+        group_freed  = size * len(to_delete)
+        total_would_free += group_freed
+        total_files      += len(to_delete)
+
+        console.print(
+            f"[dim]Group {i}[/dim]  "
+            f"[green]keep[/green] [cyan]{keeper.name}[/cyan]  "
+            f"[dim]→[/dim]  "
+            f"delete {len(to_delete)} file(s)  "
+            f"[red]({human_size(group_freed)})[/red]"
+        )
+
+    console.print(
+        f"\n[bold]Would free:[/bold] [green]{human_size(total_would_free)}[/green] "
+        f"by deleting [bold]{total_files}[/bold] file(s) "
+        f"across [bold]{len(groups)}[/bold] group(s)"
+    )
+    console.print(
+        "[dim]Run with --no-dry-run to actually delete.[/dim]\n"
     )
 
 
 def print_comparison(cross: dict, path_a: str, path_b: str) -> None:
-    """
-    Print a comparison report for `dupegun compare`.
-
-    *cross* is the dict returned by find_cross_duplicates:
-        hash -> {'a': [Path, ...], 'b': [Path, ...]}
-    """
     if not cross:
         console.print(
             "[bold green]No cross-directory duplicates found![/bold green]"
@@ -138,24 +215,16 @@ def print_comparison(cross: dict, path_a: str, path_b: str) -> None:
 
 
 def print_stats(roots: list, groups: dict, all_files: list) -> None:
-    """
-    Print a folder statistics summary for `dupegun stats`.
-
-    Args:
-        roots:     The scanned root paths.
-        groups:    Duplicate groups from find_duplicates.
-        all_files: Flat list of every file found (before dedup filtering).
-    """
     total_files = len(all_files)
     try:
         total_size = sum(p.stat().st_size for p in all_files)
     except (OSError, PermissionError):
         total_size = 0
 
-    wasted      = _wasted(groups)
-    pct         = (wasted / total_size * 100) if total_size else 0.0
-    dup_groups  = len(groups)
-    dup_files   = sum(len(paths) for paths in groups.values())
+    wasted     = _wasted(groups)
+    pct        = (wasted / total_size * 100) if total_size else 0.0
+    dup_groups = len(groups)
+    dup_files  = sum(len(paths) for paths in groups.values())
 
     t = Table(show_header=False, show_lines=False, box=None, padding=(0, 2))
     t.add_column("Label", style="bold")
@@ -174,18 +243,13 @@ def print_stats(roots: list, groups: dict, all_files: list) -> None:
 
 
 def export_html(groups: dict, out_path: str) -> None:
-    """
-    Generate a self-contained HTML report of all duplicate groups.
-    Opens cleanly in any browser — no external dependencies.
-    """
     now    = datetime.datetime.now().strftime("%Y-%m-%d %H:%M")
     wasted = _wasted(groups)
 
-    # Build group rows
     group_rows = []
     for i, (h, paths) in enumerate(groups.items(), 1):
         try:
-            size   = paths[0].stat().st_size
+            size = paths[0].stat().st_size
         except (OSError, PermissionError):
             size = 0
         grp_wasted = size * (len(paths) - 1)
@@ -223,9 +287,7 @@ def export_html(groups: dict, out_path: str) -> None:
             <thead>
               <tr><th>#</th><th>Path</th><th>Modified</th><th>Size</th></tr>
             </thead>
-            <tbody>
-              {"".join(file_rows)}
-            </tbody>
+            <tbody>{"".join(file_rows)}</tbody>
           </table>
         </div>""")
 
@@ -237,39 +299,21 @@ def export_html(groups: dict, out_path: str) -> None:
   <title>dupegun report — {now}</title>
   <style>
     *, *::before, *::after {{ box-sizing: border-box; margin: 0; padding: 0; }}
-    body {{
-      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto,
-                   "Helvetica Neue", Arial, sans-serif;
-      background: #0f1117;
-      color: #e2e8f0;
-      padding: 2rem;
-      line-height: 1.5;
-    }}
-    header {{
-      margin-bottom: 2rem;
-      border-bottom: 1px solid #2d3748;
-      padding-bottom: 1rem;
-    }}
+    body {{ font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto,
+             "Helvetica Neue", Arial, sans-serif; background: #0f1117;
+             color: #e2e8f0; padding: 2rem; line-height: 1.5; }}
+    header {{ margin-bottom: 2rem; border-bottom: 1px solid #2d3748; padding-bottom: 1rem; }}
     header h1 {{ font-size: 1.8rem; color: #63b3ed; }}
     header p  {{ color: #a0aec0; font-size: 0.9rem; margin-top: 0.25rem; }}
-    .summary {{
-      display: flex; gap: 1.5rem; flex-wrap: wrap;
-      margin-bottom: 2rem;
-    }}
-    .stat-card {{
-      background: #1a202c; border: 1px solid #2d3748;
-      border-radius: 8px; padding: 1rem 1.5rem; min-width: 160px;
-    }}
+    .summary {{ display: flex; gap: 1.5rem; flex-wrap: wrap; margin-bottom: 2rem; }}
+    .stat-card {{ background: #1a202c; border: 1px solid #2d3748;
+                  border-radius: 8px; padding: 1rem 1.5rem; min-width: 160px; }}
     .stat-card .label {{ font-size: 0.75rem; color: #a0aec0; text-transform: uppercase; }}
     .stat-card .value {{ font-size: 1.4rem; font-weight: 700; color: #f6e05e; margin-top: 2px; }}
-    .group {{
-      background: #1a202c; border: 1px solid #2d3748;
-      border-radius: 8px; margin-bottom: 1.25rem; overflow: hidden;
-    }}
-    .group-header {{
-      display: flex; align-items: center; gap: 1rem; flex-wrap: wrap;
-      padding: 0.75rem 1rem; background: #2d3748;
-    }}
+    .group {{ background: #1a202c; border: 1px solid #2d3748;
+              border-radius: 8px; margin-bottom: 1.25rem; overflow: hidden; }}
+    .group-header {{ display: flex; align-items: center; gap: 1rem; flex-wrap: wrap;
+                     padding: 0.75rem 1rem; background: #2d3748; }}
     .group-title {{ font-weight: 700; color: #90cdf4; font-size: 0.95rem; }}
     .group-meta  {{ font-size: 0.85rem; color: #a0aec0; }}
     .wasted      {{ color: #fc8181; font-weight: 600; }}
@@ -291,7 +335,6 @@ def export_html(groups: dict, out_path: str) -> None:
     <p>Generated {now} &mdash; {len(groups)} duplicate group(s) &mdash;
        {human_size(wasted)} reclaimable</p>
   </header>
-
   <div class="summary">
     <div class="stat-card">
       <div class="label">Duplicate groups</div>
@@ -306,9 +349,7 @@ def export_html(groups: dict, out_path: str) -> None:
       <div class="value">{sum(len(p) for p in groups.values())}</div>
     </div>
   </div>
-
   {"".join(group_rows)}
-
   <footer>dupegun &mdash; <a href="https://github.com/Prasanna-Balakrishnan/dupegun"
     style="color:#4a5568">github.com/Prasanna-Balakrishnan/dupegun</a></footer>
 </body>
